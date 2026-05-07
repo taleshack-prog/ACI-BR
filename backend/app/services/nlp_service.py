@@ -76,7 +76,7 @@ TEMPORAL_FAMILY_PATTERNS = [
 ]
 
 
-def _is_negated(context: str, term_pos: int, window: int = 60) -> bool:
+def _is_negated(context: str, term_pos: int, window: int = 30) -> bool:
     """Verifica se o termo está negado com base no contexto imediatamente anterior."""
     start = max(0, term_pos - window)
     preceding = context[start:term_pos].lower()
