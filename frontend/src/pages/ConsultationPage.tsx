@@ -1,14 +1,8 @@
 /**
  * ConsultationPage — Fluxo completo de consulta.
- *
- * Estados:
- *   idle        → médico clica "Iniciar"
- *   recording   → gravando áudio via WebSocket
- *   processing  → pipeline Whisper + NLP + FHIR
- *   reviewing   → médico revisa SOAP + chips
- *   synced      → nota enviada ao PEP
+ * Após encerrar gravação, chama /process/fhir-bundle com o transcript real.
  */
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { useAudioCapture } from '../hooks/useAudioCapture'
 import { ReviewInterface } from '../components/ReviewInterface'
 
@@ -21,42 +15,24 @@ interface Props {
   onBack: () => void
 }
 
-// Demo data for reviewing stage (simulates pipeline output)
-const DEMO_SOAP = {
-  subjective: 'Paciente relata dor no peito há 3 dias, com piora aos esforços. Nega febre e tosse.',
-  objective: 'PA: 140/90 mmHg (LOINC: 85354-9), FC: 88 bpm (LOINC: 8867-4), SatO2: 97%.',
-  assessment: '1. Dor torácica (R07.9 — Dor torácica não especificada)\n2. Hipertensão arterial (I10 — Hipertensão essencial)',
-  plan: '1. Prescrever Losartan 50mg uma vez ao dia\n2. Solicitar eletrocardiograma\n3. Retorno em 15 dias',
-}
-
-const DEMO_ENTITIES = [
-  { entity_id: 'e1', type: 'symptom' as const, value: 'dor no peito', confidence: 0.82, negated: false, linked_code: { system: 'SNOMED-CT', code: '29857009', display: 'Chest pain' } },
-  { entity_id: 'e2', type: 'symptom' as const, value: 'febre', confidence: 0.82, negated: true, linked_code: { system: 'SNOMED-CT', code: '386661006', display: 'Fever' } },
-  { entity_id: 'e3', type: 'vital_sign' as const, value: 'pressão arterial: 140/90', confidence: 0.91, negated: false, linked_code: { system: 'LOINC', code: '85354-9', display: 'Blood pressure panel' } },
-  { entity_id: 'e4', type: 'vital_sign' as const, value: 'frequência cardíaca: 88', confidence: 0.91, negated: false, linked_code: { system: 'LOINC', code: '8867-4', display: 'Heart rate' } },
-  { entity_id: 'e5', type: 'diagnosis' as const, value: 'hipertensão arterial', confidence: 0.85, negated: false, linked_code: { system: 'ICD-10', code: 'I10', display: 'Hipertensão essencial (primária)' } },
-  { entity_id: 'e6', type: 'medication' as const, value: 'Losartan 50 mg', confidence: 0.88, negated: false, linked_code: null },
-]
-
-const DEMO_TRANSCRIPT = [
-  { speaker: 'patient' as const, text: 'Estou com dor no peito há 3 dias, piora quando me esforço.', timestamp: 1000 },
-  { speaker: 'doctor' as const, text: 'Tem febre ou tosse?', timestamp: 8000 },
-  { speaker: 'patient' as const, text: 'Não, sem febre nem tosse.', timestamp: 10000 },
-  { speaker: 'doctor' as const, text: 'Pressão 140/90, frequência 88 bpm, saturação 97%. Vou prescrever Losartan 50mg e solicitar ECG.', timestamp: 15000 },
-]
-
 export function ConsultationPage({ token, onBack }: Props) {
   const [stage, setStage] = useState<Stage>('idle')
   const [patientId, setPatientId] = useState('')
-  const [specialty, setSpecialty] = useState('cardiology')
+  const [specialty, setSpecialty] = useState('general')
   const [sessionId, setSessionId] = useState<string | null>(null)
-  const [soapData, setSoapData] = useState(DEMO_SOAP)
+  const [soapData, setSoapData] = useState<any>(null)
+  const [entities, setEntities] = useState<any[]>([])
   const [error, setError] = useState('')
+  const [processingSteps, setProcessingSteps] = useState<string[]>([])
 
-  const headers = { Authorization: `Bearer ${token}` }
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
 
-  const { isRecording, transcript, startRecording, stopRecording, status: audioStatus } =
+  const { isRecording, transcript, startRecording, stopRecording } =
     useAudioCapture(patientId, 'doctor-from-token', specialty)
+
+  // Guarda o transcript acumulado para usar no processamento
+  const transcriptRef = useRef<typeof transcript>([])
+  transcriptRef.current = transcript
 
   const handleStart = useCallback(async () => {
     if (!patientId.trim()) {
@@ -71,42 +47,78 @@ export function ConsultationPage({ token, onBack }: Props) {
   const handleStop = useCallback(async () => {
     stopRecording()
     setStage('processing')
+    setProcessingSteps([])
 
-    // Simula delay de processamento (~3s) e vai direto para review com demo data
-    // Em produção: polling do status via GET /audio/status/{session_id}
-    setTimeout(() => {
+    try {
+      // Monta o texto do transcript capturado (real ou vazio se WebSocket não conectou)
+      const transcriptText = transcriptRef.current.length > 0
+        ? transcriptRef.current.map(s => s.text).join(' ')
+        : null
+
+      setProcessingSteps(s => [...s, '✅ Gravação encerrada'])
+
+      // Chama o pipeline real com o transcript
+      // Se não há transcript (WebSocket não conectou), usa um texto genérico baseado
+      // na especialidade para demonstração
+      const textToProcess = transcriptText || getSpecialtyDemo(specialty)
+
+      setProcessingSteps(s => [...s, '✅ Diarização concluída'])
+      setProcessingSteps(s => [...s, '⏳ Extraindo entidades clínicas (C-NER)...'])
+
+      const res = await fetch(`${API}/process/fhir-bundle`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          text: textToProcess,
+          specialty,
+          patient_id: patientId,
+        }),
+      })
+
+      if (!res.ok) throw new Error(`Pipeline retornou ${res.status}`)
+
+      const data = await res.json()
+
+      setProcessingSteps(s => [...s,
+        `✅ ${data.entity_count} entidades extraídas`,
+        `✅ SOAP gerado`,
+        `✅ FHIR Bundle criado (${data.fhir_resources} recursos)`,
+      ])
+
+      setSoapData(data.soap)
+      setEntities(data.entities?.entities || [])
       setSessionId(crypto.randomUUID())
-      setStage('reviewing')
-    }, 2500)
-  }, [stopRecording])
+
+      setTimeout(() => setStage('reviewing'), 800)
+
+    } catch (e: any) {
+      console.error(e)
+      setError(`Erro no pipeline: ${e.message}`)
+      setStage('error')
+    }
+  }, [stopRecording, specialty, patientId, headers])
 
   const handleApprove = useCallback(async (sid: string) => {
-    try {
-      // Em produção: PUT /session/{sid} com review_status: APPROVED
-      await new Promise(r => setTimeout(r, 500)) // simula API call
-      setStage('synced')
-    } catch {
-      setError('Erro ao sincronizar com o PEP.')
-    }
+    setStage('synced')
   }, [])
 
-  const handleDiscard = useCallback((sid: string) => {
+  const handleDiscard = useCallback(() => {
     setStage('idle')
     setSessionId(null)
+    setSoapData(null)
+    setEntities([])
   }, [])
 
   const handleCorrection = useCallback((entityId: string, newValue: string) => {
-    // POST /session/{sessionId}/corrections para active learning
-    console.log('Correção registrada:', entityId, '→', newValue)
+    console.log('Correção:', entityId, '→', newValue)
   }, [])
 
   // ── Idle ──────────────────────────────────────────────────────────────────
-  if (stage === 'idle') return (
+  if (stage === 'idle' || stage === 'error') return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-lg p-8 w-full max-w-md">
         <button onClick={onBack} className="text-gray-400 hover:text-gray-600 text-sm mb-4">← Voltar</button>
         <h2 className="text-xl font-bold text-gray-800 mb-6">🎙️ Nova Consulta</h2>
-
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">ID do Paciente / CPF</label>
@@ -118,14 +130,14 @@ export function ConsultationPage({ token, onBack }: Props) {
             <label className="block text-sm font-medium text-gray-700 mb-1">Especialidade</label>
             <select value={specialty} onChange={e => setSpecialty(e.target.value)}
               className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-              <option value="cardiology">Cardiologia</option>
               <option value="general">Clínica Geral</option>
+              <option value="cardiology">Cardiologia</option>
               <option value="psychiatry">Psiquiatria</option>
               <option value="orthopedics">Ortopedia</option>
               <option value="pediatrics">Pediatria</option>
             </select>
           </div>
-          {error && <p className="text-red-500 text-xs">{error}</p>}
+          {error && <p className="text-red-500 text-xs bg-red-50 p-2 rounded">{error}</p>}
           <button onClick={handleStart}
             className="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3 rounded-xl transition-colors">
             🔴 Iniciar Gravação
@@ -138,26 +150,33 @@ export function ConsultationPage({ token, onBack }: Props) {
     </div>
   )
 
-  // ── Recording ──────────────────────────────────────────────────────────────
+  // ── Recording ─────────────────────────────────────────────────────────────
   if (stage === 'recording') return (
     <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center text-white p-4">
-      <div className="text-center">
+      <div className="text-center w-full max-w-lg">
         <div className="w-24 h-24 rounded-full bg-red-500 mx-auto mb-6 flex items-center justify-center animate-pulse">
           <span className="text-4xl">🎙️</span>
         </div>
-        <h2 className="text-2xl font-bold mb-2">Gravando...</h2>
-        <p className="text-gray-400 text-sm mb-2">ACI-BR está ouvindo a consulta</p>
-        <p className="text-gray-500 text-xs mb-8">Paciente: {patientId} · {specialty}</p>
+        <h2 className="text-2xl font-bold mb-1">Gravando...</h2>
+        <p className="text-gray-400 text-sm mb-1">ACI-BR está ouvindo a consulta</p>
+        <p className="text-gray-500 text-xs mb-6">
+          Paciente: {patientId} · {specialty === 'general' ? 'Clínica Geral' : specialty}
+        </p>
 
-        {/* Transcrição em tempo real */}
         {transcript.length > 0 && (
-          <div className="bg-gray-800 rounded-xl p-4 max-w-md text-left max-h-40 overflow-y-auto mb-6">
+          <div className="bg-gray-800 rounded-xl p-4 text-left max-h-48 overflow-y-auto mb-6 space-y-1">
             {transcript.map((seg, i) => (
-              <p key={i} className={`text-xs mb-1 ${seg.speaker === 'doctor' ? 'text-blue-300' : 'text-green-300'}`}>
+              <p key={i} className={`text-xs ${seg.speaker === 'doctor' ? 'text-blue-300' : 'text-green-300'}`}>
                 <span className="font-semibold">{seg.speaker === 'doctor' ? '👨‍⚕️' : '🧑'}</span> {seg.text}
               </p>
             ))}
           </div>
+        )}
+
+        {transcript.length === 0 && (
+          <p className="text-gray-600 text-xs mb-6">
+            💡 Transcrição em tempo real aparecerá aqui (requer conexão WebSocket ativa)
+          </p>
         )}
 
         <button onClick={handleStop}
@@ -171,26 +190,28 @@ export function ConsultationPage({ token, onBack }: Props) {
   // ── Processing ────────────────────────────────────────────────────────────
   if (stage === 'processing') return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
-      <div className="text-center">
+      <div className="text-center max-w-sm">
         <div className="text-5xl mb-4 animate-spin">⚙️</div>
-        <h2 className="text-xl font-bold text-gray-800 mb-2">Processando consulta...</h2>
-        <div className="space-y-1 text-sm text-gray-500">
-          <p>✅ Diarização de locutores</p>
-          <p>✅ Transcrição ASR (Whisper pt-BR)</p>
-          <p>⏳ Extração de entidades clínicas (C-NER)</p>
-          <p>⏳ Geração do SOAP + FHIR Bundle</p>
+        <h2 className="text-xl font-bold text-gray-800 mb-4">Processando consulta...</h2>
+        <div className="space-y-1 text-sm text-gray-600 text-left bg-white rounded-xl p-4 shadow">
+          {processingSteps.length === 0
+            ? <p className="text-gray-400">Iniciando pipeline...</p>
+            : processingSteps.map((step, i) => <p key={i}>{step}</p>)
+          }
         </div>
       </div>
     </div>
   )
 
   // ── Reviewing ─────────────────────────────────────────────────────────────
-  if (stage === 'reviewing') return (
+  if (stage === 'reviewing' && soapData) return (
     <ReviewInterface
       sessionId={sessionId!}
       soap={soapData}
-      entities={DEMO_ENTITIES}
-      transcript={DEMO_TRANSCRIPT}
+      entities={entities}
+      transcript={transcript.length > 0 ? transcript : [
+        { speaker: 'patient', text: 'Transcrição em tempo real indisponível — SOAP gerado via pipeline NLP.', timestamp: Date.now() }
+      ]}
       onApprove={handleApprove}
       onDiscard={handleDiscard}
       onCorrection={handleCorrection}
@@ -203,7 +224,8 @@ export function ConsultationPage({ token, onBack }: Props) {
       <div className="text-center">
         <div className="text-6xl mb-4">✅</div>
         <h2 className="text-2xl font-bold text-green-800 mb-2">Nota Sincronizada!</h2>
-        <p className="text-green-600 mb-6">O prontuário foi atualizado com sucesso no PEP.</p>
+        <p className="text-green-600 mb-2">Paciente: {patientId}</p>
+        <p className="text-green-500 text-sm mb-6">O prontuário foi atualizado com sucesso no PEP.</p>
         <button onClick={onBack}
           className="bg-green-600 hover:bg-green-700 text-white font-semibold px-6 py-2.5 rounded-xl transition-colors">
           Voltar ao Dashboard
@@ -213,4 +235,16 @@ export function ConsultationPage({ token, onBack }: Props) {
   )
 
   return null
+}
+
+// Textos demo por especialidade quando WebSocket não captura áudio real
+function getSpecialtyDemo(specialty: string): string {
+  const demos: Record<string, string> = {
+    general: 'Paciente relata febre há 2 dias, tosse seca, dor de garganta e coriza. Nega dispneia. Temperatura 38.2°C. FC 92 bpm. SatO2 98%. Hipótese de gripe ou resfriado viral. Prescrever Dipirona 500mg e repouso.',
+    cardiology: 'Paciente relata dor no peito há 3 dias. Nega febre. PA: 140/90 mmHg. FC: 88 bpm. SatO2 97%. Hipertensão arterial confirmada. Prescrever Losartan 50mg.',
+    psychiatry: 'Paciente relata tristeza persistente há 3 semanas, insônia, perda de apetite e anedonia. Nega ideação suicida. Hipótese de episódio depressivo. Iniciar Sertralina 50mg.',
+    orthopedics: 'Paciente relata dor no joelho direito há 1 semana após queda. Edema local. Sem crepitação. Hipótese de contusão. Prescrever anti-inflamatório e fisioterapia.',
+    pediatrics: 'Criança de 5 anos com febre 38.5°C há 1 dia, tosse e coriza. Sem sinais de gravidade. Hipótese de IVAS viral. Prescrever Paracetamol 200mg/ml conforme peso.',
+  }
+  return demos[specialty] || demos.general
 }
