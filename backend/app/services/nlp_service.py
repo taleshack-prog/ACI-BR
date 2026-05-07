@@ -76,14 +76,10 @@ TEMPORAL_FAMILY_PATTERNS = [
 ]
 
 
-def _is_negated(context: str, term_pos: int, window: int = 80) -> bool:
-    """Negação não atravessa fronteiras de frase (ponto, ponto-e-vírgula, newline)."""
+def _is_negated(context: str, term_pos: int, window: int = 30) -> bool:
+    """Verifica se o termo está negado com base no contexto imediatamente anterior."""
     start = max(0, term_pos - window)
-    preceding = context[start:term_pos]
-    last_boundary = max(preceding.rfind('.'), preceding.rfind(';'), preceding.rfind('\n'))
-    if last_boundary >= 0:
-        preceding = preceding[last_boundary + 1:]
-    preceding = preceding.lower()
+    preceding = context[start:term_pos].lower()
     for pattern in NEGATION_PATTERNS:
         if re.search(pattern, preceding):
             return True
