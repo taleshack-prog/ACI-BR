@@ -50,10 +50,8 @@ export function ConsultationPage({ token, onBack }: Props) {
     setProcessingSteps([])
 
     try {
-      // Monta o texto do transcript capturado (real ou vazio se WebSocket não conectou)
-      const transcriptText = transcriptRef.current.length > 0
-        ? transcriptRef.current.map(s => s.text).join(' ')
-        : null
+      // Usa transcript real do Whisper se disponível, senão demo por especialidade
+      const transcriptText = getFullTranscript() || null
 
       setProcessingSteps(s => [...s, '✅ Gravação encerrada'])
 

@@ -1,18 +1,14 @@
 /**
- * useAudioCapture — Hook de captura de áudio via Web Audio API + WebSocket.
+ * useAudioCapture — Web Audio API + WebSocket com transcrição real via OpenAI Whisper.
  *
- * Pipeline:
- *  1. Solicita permissão de microfone
- *  2. Cria AudioContext (16kHz, mono)
- *  3. Conecta ao WebSocket do backend (WSS)
- *  4. Envia chunks PCM de 100ms em base64
- *  5. Recebe transcrições parciais em tempo real
+ * O backend acumula chunks de 3s e chama a API do Whisper a cada batch,
+ * retornando transcrições parciais em tempo real via WebSocket.
  */
 import { useState, useRef, useCallback } from 'react'
 
-const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/audio/stream'
-const CHUNK_INTERVAL_MS = 100
+const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8001/audio/stream'
 const SAMPLE_RATE = 16000
+const CHUNK_SIZE = 1600  // 100ms @ 16kHz
 
 export interface TranscriptSegment {
   speaker: 'doctor' | 'patient' | 'unknown'
@@ -24,6 +20,7 @@ export interface AudioCaptureState {
   isRecording: boolean
   sessionId: string | null
   transcript: TranscriptSegment[]
+  fullTranscript: string
   error: string | null
   status: 'idle' | 'recording' | 'processing' | 'ready' | 'error'
 }
@@ -33,6 +30,7 @@ export function useAudioCapture(patientId: string, doctorId: string, specialty =
     isRecording: false,
     sessionId: null,
     transcript: [],
+    fullTranscript: '',
     error: null,
     status: 'idle',
   })
@@ -42,9 +40,8 @@ export function useAudioCapture(patientId: string, doctorId: string, specialty =
   const streamRef = useRef<MediaStream | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const sessionIdRef = useRef<string>(crypto.randomUUID())
-  const chunksRef = useRef<Float32Array[]>([])
+  const fullTranscriptRef = useRef<string>('')
 
-  /** Converte Float32Array (PCM) para base64 Int16 */
   const pcmToBase64 = (float32: Float32Array): string => {
     const int16 = new Int16Array(float32.length)
     for (let i = 0; i < float32.length; i++) {
@@ -58,50 +55,54 @@ export function useAudioCapture(patientId: string, doctorId: string, specialty =
 
   const startRecording = useCallback(async () => {
     try {
-      // 1. Permissão de microfone
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+        audio: {
+          sampleRate: SAMPLE_RATE,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
       })
       streamRef.current = stream
+      fullTranscriptRef.current = ''
 
-      // 2. AudioContext
       const audioContext = new AudioContext({ sampleRate: SAMPLE_RATE })
       audioContextRef.current = audioContext
       const source = audioContext.createMediaStreamSource(stream)
-
-      // 3. ScriptProcessor para chunks (substituir por AudioWorklet em prod)
-      const processor = audioContext.createScriptProcessor(1600, 1, 1) // ~100ms @16kHz
+      const processor = audioContext.createScriptProcessor(CHUNK_SIZE, 1, 1)
       processorRef.current = processor
 
-      // 4. WebSocket
       const ws = new WebSocket(WS_URL)
       wsRef.current = ws
       const sessionId = sessionIdRef.current
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({
-          type: 'start',
-          sessionId,
-          patientId,
-          doctorId,
-          specialty,
-        }))
-        setState(s => ({ ...s, isRecording: true, sessionId, status: 'recording', error: null }))
+        ws.send(JSON.stringify({ type: 'start', sessionId, patientId, doctorId, specialty }))
+        setState(s => ({ ...s, isRecording: true, sessionId, status: 'recording', error: null, transcript: [], fullTranscript: '' }))
       }
 
       ws.onmessage = (event) => {
         const msg = JSON.parse(event.data)
-        if (msg.type === 'transcript') {
+
+        if (msg.type === 'transcript' && msg.text) {
+          // Transcrição parcial real do Whisper
+          fullTranscriptRef.current += ' ' + msg.text
           setState(s => ({
             ...s,
+            fullTranscript: fullTranscriptRef.current.trim(),
             transcript: [...s.transcript, {
-              speaker: msg.speaker,
+              speaker: msg.speaker ?? 'unknown',
               text: msg.text,
               timestamp: Date.now(),
             }],
           }))
         } else if (msg.type === 'status') {
-          setState(s => ({ ...s, status: msg.status }))
+          if (msg.fullTranscript) {
+            fullTranscriptRef.current = msg.fullTranscript
+            setState(s => ({ ...s, fullTranscript: msg.fullTranscript, status: msg.status }))
+          } else {
+            setState(s => ({ ...s, status: msg.status }))
+          }
         } else if (msg.type === 'error') {
           setState(s => ({ ...s, error: msg.message, status: 'error' }))
         }
@@ -109,7 +110,6 @@ export function useAudioCapture(patientId: string, doctorId: string, specialty =
 
       ws.onerror = () => setState(s => ({ ...s, error: 'Erro na conexão WebSocket', status: 'error' }))
 
-      // 5. Envia chunks PCM
       processor.onaudioprocess = (e) => {
         if (ws.readyState === WebSocket.OPEN) {
           const channelData = e.inputBuffer.getChannelData(0)
@@ -127,24 +127,26 @@ export function useAudioCapture(patientId: string, doctorId: string, specialty =
   }, [patientId, doctorId, specialty])
 
   const stopRecording = useCallback(() => {
-    // Encerra stream de áudio
     streamRef.current?.getTracks().forEach(t => t.stop())
     processorRef.current?.disconnect()
     audioContextRef.current?.close()
 
-    // Sinaliza fim para o backend
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'end', sessionId: sessionIdRef.current }))
       wsRef.current.close()
     }
 
     setState(s => ({ ...s, isRecording: false, status: 'processing' }))
+    return fullTranscriptRef.current.trim()
   }, [])
 
   const reset = useCallback(() => {
     sessionIdRef.current = crypto.randomUUID()
-    setState({ isRecording: false, sessionId: null, transcript: [], error: null, status: 'idle' })
+    fullTranscriptRef.current = ''
+    setState({ isRecording: false, sessionId: null, transcript: [], fullTranscript: '', error: null, status: 'idle' })
   }, [])
 
-  return { ...state, startRecording, stopRecording, reset }
+  const getFullTranscript = useCallback(() => fullTranscriptRef.current.trim(), [])
+
+  return { ...state, startRecording, stopRecording, reset, getFullTranscript }
 }

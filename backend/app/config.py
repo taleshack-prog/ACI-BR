@@ -50,3 +50,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+    OPENAI_API_KEY: str = ""
