@@ -27,7 +27,7 @@ export function ConsultationPage({ token, onBack }: Props) {
 
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
 
-  const { isRecording, transcript, startRecording, stopRecording } =
+  const { isRecording, transcript, fullTranscript, startRecording, stopRecording, getFullTranscript } =
     useAudioCapture(patientId, 'doctor-from-token', specialty)
 
   // Guarda o transcript acumulado para usar no processamento
