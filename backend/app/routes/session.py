@@ -29,7 +29,7 @@ async def _get_db():
 
 async def _load_session(session_id: str) -> Optional[dict]:
     db = await _get_db()
-    if db:
+    if db is not None:
         from app.services.session_repository import get_session
         return await get_session(db, session_id)
     return _sessions.get(session_id)
@@ -37,7 +37,7 @@ async def _load_session(session_id: str) -> Optional[dict]:
 
 async def _save_session(session_id: str, data: dict):
     db = await _get_db()
-    if db:
+    if db is not None:
         from app.services.session_repository import update_session
         await update_session(db, session_id, data)
     else:
@@ -88,7 +88,7 @@ async def create_session(
     }
 
     db = await _get_db()
-    if db:
+    if db is not None:
         try:
             from app.services.session_repository import create_session as db_create
             from app.models.session import ClinicalSession, SOAPNote
@@ -113,7 +113,7 @@ async def list_sessions(
 ):
     """Lista sessões do médico autenticado."""
     db = await _get_db()
-    if db:
+    if db is not None:
         try:
             from app.services.session_repository import list_sessions_by_doctor
             sessions = await list_sessions_by_doctor(db, current_user.sub, status)
