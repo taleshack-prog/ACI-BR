@@ -6,6 +6,7 @@
  */
 import { useState, useRef, useCallback } from 'react'
 
+console.log('WS_URL:', import.meta.env.VITE_WS_URL);
 const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8001/audio/stream'
 const SAMPLE_RATE = 16000
 const CHUNK_SIZE = 1600  // 100ms @ 16kHz
@@ -108,7 +109,7 @@ export function useAudioCapture(patientId: string, doctorId: string, specialty =
         }
       }
 
-      ws.onerror = () => setState(s => ({ ...s, error: 'Erro na conexão WebSocket', status: 'error' }))
+      ws.onerror = (e) => { console.error('WebSocket erro:', e); setState(s => ({ ...s, error: 'Erro na conexão WebSocket', status: 'error' })); }
 
       processor.onaudioprocess = (e) => {
         if (ws.readyState === WebSocket.OPEN) {
