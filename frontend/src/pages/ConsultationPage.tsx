@@ -87,8 +87,31 @@ export function ConsultationPage({ token, onBack }: Props) {
 
       setSoapData(data.soap)
       setEntities(data.entities?.entities || [])
-      setSessionId(crypto.randomUUID())
 
+      // Salva sessão no backend para persistência e dashboard
+      let newSessionId = crypto.randomUUID()
+      try {
+        const sessRes = await fetch(`${API}/session`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            patient_id: patientId,
+            specialty,
+            soap: data.soap,
+            entities: data.entities?.entities || [],
+            fhir_bundle: data.fhir_bundle,
+          }),
+        })
+        if (sessRes.ok) {
+          const sessData = await sessRes.json()
+          newSessionId = sessData.session_id
+          setProcessingSteps(s => [...s, '✅ Sessão salva no servidor'])
+        }
+      } catch (e) {
+        console.warn('Sessão não salva no servidor (continuando localmente)', e)
+      }
+
+      setSessionId(newSessionId)
       setTimeout(() => setStage('reviewing'), 800)
 
     } catch (e: any) {
