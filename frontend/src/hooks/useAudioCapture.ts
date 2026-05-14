@@ -9,7 +9,7 @@ import { useState, useRef, useCallback } from 'react'
 console.log('WS_URL:', import.meta.env.VITE_WS_URL);
 const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8001/audio/stream'
 const SAMPLE_RATE = 16000
-const CHUNK_SIZE = 1600  // 100ms @ 16kHz
+const CHUNK_SIZE = 2048  // ~128ms @ 16kHz (createScriptProcessor exige potência de 2)
 
 export interface TranscriptSegment {
   speaker: 'doctor' | 'patient' | 'unknown'
@@ -56,14 +56,16 @@ export function useAudioCapture(patientId: string, doctorId: string, specialty =
 
   const startRecording = useCallback(async () => {
     try {
+      console.log('[AudioCapture] startRecording chamado')
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: SAMPLE_RATE,
+          sampleRate: { ideal: SAMPLE_RATE },
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
         },
       })
+      console.log('[AudioCapture] getUserMedia OK')
       streamRef.current = stream
       fullTranscriptRef.current = ''
 
@@ -73,14 +75,26 @@ export function useAudioCapture(patientId: string, doctorId: string, specialty =
       const processor = audioContext.createScriptProcessor(CHUNK_SIZE, 1, 1)
       processorRef.current = processor
 
+      const sessionId = sessionIdRef.current
+      console.log('[AudioCapture] Abrindo WebSocket:', WS_URL)
       const ws = new WebSocket(WS_URL)
       wsRef.current = ws
-      const sessionId = sessionIdRef.current
 
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'start', sessionId, patientId, doctorId, specialty }))
-        setState(s => ({ ...s, isRecording: true, sessionId, status: 'recording', error: null, transcript: [], fullTranscript: '' }))
-      }
+      await new Promise<void>((resolve, reject) => {
+        let timeoutId: ReturnType<typeof setTimeout>
+        ws.onopen = () => {
+          clearTimeout(timeoutId)
+          console.log('[AudioCapture] WebSocket aberto')
+          ws.send(JSON.stringify({ type: 'start', sessionId, patientId, doctorId, specialty }))
+          setState(s => ({ ...s, isRecording: true, sessionId, status: 'recording', error: null, transcript: [], fullTranscript: '' }))
+          resolve()
+        }
+        ws.onerror = (e) => {
+          console.error('[AudioCapture] WebSocket onerror na conexão:', e)
+          reject(new Error('WebSocket falhou'))
+        }
+        timeoutId = setTimeout(() => reject(new Error('WebSocket timeout (5s)')), 5000)
+      })
 
       ws.onmessage = (event) => {
         const msg = JSON.parse(event.data)
@@ -123,6 +137,10 @@ export function useAudioCapture(patientId: string, doctorId: string, specialty =
       processor.connect(audioContext.destination)
 
     } catch (err) {
+      console.error('[AudioCapture] Erro em startRecording:', err)
+      streamRef.current?.getTracks().forEach(t => t.stop())
+      audioContextRef.current?.close()
+      wsRef.current?.close()
       setState(s => ({ ...s, error: `Erro ao iniciar gravação: ${err}`, status: 'error' }))
     }
   }, [patientId, doctorId, specialty])

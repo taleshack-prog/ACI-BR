@@ -27,7 +27,7 @@ export function ConsultationPage({ token, onBack }: Props) {
 
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
 
-  const { isRecording, transcript, fullTranscript, startRecording, stopRecording, getFullTranscript } =
+  const { isRecording, transcript, fullTranscript, startRecording, stopRecording, getFullTranscript, error: audioError, status: audioStatus } =
     useAudioCapture(patientId, 'doctor-from-token', specialty)
 
   // Guarda o transcript acumulado para usar no processamento
@@ -194,9 +194,17 @@ export function ConsultationPage({ token, onBack }: Props) {
           </div>
         )}
 
-        {transcript.length === 0 && (
+        {audioStatus === 'error' && audioError && (
+          <div className="bg-red-900/50 border border-red-500 rounded-xl px-4 py-3 mb-6 text-sm text-red-200 text-left">
+            <p className="font-semibold mb-1">⚠️ Falha na captura de áudio</p>
+            <p className="text-xs text-red-300">{audioError}</p>
+            <p className="text-xs text-red-400 mt-1">O SOAP será gerado sem transcrição em tempo real.</p>
+          </div>
+        )}
+
+        {audioStatus !== 'error' && transcript.length === 0 && (
           <p className="text-gray-600 text-xs mb-6">
-            💡 Transcrição em tempo real aparecerá aqui (requer conexão WebSocket ativa)
+            💡 Transcrição em tempo real aparecerá aqui assim que o microfone for capturado
           </p>
         )}
 

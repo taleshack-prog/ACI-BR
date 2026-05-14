@@ -26,7 +26,7 @@ interface SOAPNote {
 }
 
 interface TranscriptSegment {
-  speaker: 'doctor' | 'patient'
+  speaker: 'doctor' | 'patient' | 'unknown'
   text: string
   timestamp: number
 }
