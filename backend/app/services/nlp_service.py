@@ -8,6 +8,7 @@ detecta negações, temporalidade e mapeia para CID-10/SNOMED-CT/LOINC.
 import logging
 import json
 import httpx
+from app.config import settings
 from app.models.session import ClinicalEntity, LinkedCode, ClinicalExtraction, SOAPNote
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ async def _call_claude(system_prompt: str, user_prompt: str, max_tokens: int = 2
     headers = {
         "Content-Type": "application/json",
         "anthropic-version": "2023-06-01",
+        "x-api-key": settings.ANTHROPIC_API_KEY,
     }
     body = {
         "model": CLAUDE_MODEL,

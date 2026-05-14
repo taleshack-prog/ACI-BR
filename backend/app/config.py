@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     # ── Armazenamento de Áudio ────────────────────────
     AUDIO_STORAGE_BUCKET: str = "aci-audio-encrypted"
     OPENAI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
     AUDIO_TTL_HOURS: int = 24  # Descarte pós-processamento (LGPD)
     SESSION_TTL_DAYS: int = 30  # TTL MongoDB
 
